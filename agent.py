@@ -1,3 +1,21 @@
+
+PRICE_PER_GRAM = {
+    "бісмарк": 165, "якірне": 165, "панцирне": 165, "пітон": 165, "фігаро": 165,
+    "рамзес": 170, "козацьке": 170, "фараон": 170, "імператор": 170, "кардинал": 170,
+    "водоспад": 170, "тризуб": 170, "лисячий хвіст": 170, "тракторне": 170, "візантія": 170, "біт": 170,
+    "якір 5+2": 165,
+}
+DEFAULT_PRICE = 170
+
+def get_price_per_gram(style):
+    if not style:
+        return DEFAULT_PRICE
+    style_lower = style.lower()
+    for key, price in PRICE_PER_GRAM.items():
+        if key in style_lower:
+            return price
+    return DEFAULT_PRICE
+
 import os
 import json
 import logging
@@ -497,6 +515,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await query.answer(f"{emoji} {oid} — {name}")
 
+        # якщо статус ready — питаємо вагу
+        if new_status == "ready":
+            state = get_state(chat_id)
+            state["waiting_weight"] = oid
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Введіть точну вагу виробу {oid} в грамах (наприклад: 23.5):"
+            )
+
         # сповіщення клієнту
         status_msgs = {
             "in_progress": f"⚙️ Ваше замовлення {oid} прийнято в роботу! Майстер розпочав виготовлення 🩶",
@@ -617,6 +644,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin_chat = chat_id in ADMIN_IDS and admin_modes.get(chat_id, False)
     state = get_state(chat_id)
     steps = STEPS_ADMIN if state.get("is_admin_order") else STEPS_CLIENT
+
+    # введення ваги виробу — тільки якщо не в анкеті
+    if state.get("waiting_weight") and chat_id in ADMIN_IDS and state.get("step") is None:
+        oid = state["waiting_weight"]
+        try:
+            weight_actual = float(text.replace(",", "."))
+            orders = load_orders()
+            for o in orders:
+                if o["id"] == oid:
+                    price_per_gram = get_price_per_gram(o.get("style", ""))
+                    total_price = round(weight_actual * price_per_gram)
+                    o["weight_actual"] = weight_actual
+                    o["price_per_gram"] = price_per_gram
+                    o["total_price"] = total_price
+                    break
+            with open(ORDERS_FILE, "w", encoding="utf-8") as f:
+                json.dump(orders, f, ensure_ascii=False, indent=2)
+            state["waiting_weight"] = None
+            await update.message.reply_text(
+                f"✅ {oid} — вага {weight_actual}г\n"
+                f"Ціна за грам: {price_per_gram} грн\n"
+                f"Сума: {total_price} грн"
+            )
+        except ValueError:
+            await update.message.reply_text("Введіть число, наприклад: 23.5")
+        return
 
     # редагування замовлення
     if state.get("editing"):
