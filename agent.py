@@ -158,6 +158,7 @@ async def send_step(chat_id, context, steps, step_idx):
 async def finish_order(chat_id, username, context):
     state = get_state(chat_id)
     d = state["data"]
+    d["client_chat_id"] = chat_id
     oid = save_order(d)
     state["step"] = None
     state["data"] = {}
@@ -460,6 +461,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         await query.answer(f"{emoji} {oid} — {name}")
+
+        # сповіщення клієнту
+        status_msgs = {
+            "in_progress": f"⚙️ Ваше замовлення {oid} прийнято в роботу! Майстер розпочав виготовлення 🩶",
+            "ready": f"✅ Ваше замовлення {oid} готове! Владислав зв'яжеться з вами для відправки.",
+            "sent": f"📦 Ваше замовлення {oid} відправлено! Очікуйте на Новій Пошті.",
+            "paused": f"⏸ По вашому замовленню {oid} є питання. Владислав зв'яжеться з вами найближчим часом.",
+        }
+        if new_status in status_msgs:
+            orders = load_orders()
+            for o in orders:
+                if o["id"] == oid:
+                    client_chat_id = o.get("client_chat_id")
+                    if client_chat_id:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=client_chat_id,
+                                text=status_msgs[new_status]
+                            )
+                        except Exception as e:
+                            logging.error(f"Не вдалось сповістити клієнта: {e}")
+                    break
         return
 
     if not data.startswith("ans:"):
