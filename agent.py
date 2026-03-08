@@ -901,6 +901,57 @@ async def auto_archive(context):
             text=f"🗃 Автоархів: {changed} замовлень переміщено в архів"
         )
 
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in ADMIN_IDS:
+        return
+    orders = load_orders()
+    now = datetime.now()
+
+    def in_period(o, days):
+        try:
+            created = datetime.strptime(o.get("created", ""), "%d.%m.%Y %H:%M")
+            return (now - created).days <= days
+        except:
+            return False
+
+    week = [o for o in orders if in_period(o, 7) and o.get("status") != "archived"]
+    month = [o for o in orders if in_period(o, 30) and o.get("status") != "archived"]
+
+    # вага і виручка
+    month_weight = sum(o.get("weight_actual", 0) for o in month)
+    month_revenue = sum(o.get("total_price", 0) for o in month)
+
+    # звідки клієнти
+    sources = {}
+    for o in month:
+        s = o.get("source", "Не вказано")
+        sources[s] = sources.get(s, 0) + 1
+    sources_text = "\n".join(f"  {k}: {v}" for k, v in sorted(sources.items(), key=lambda x: -x[1]))
+
+    # топ плетінь
+    styles = {}
+    for o in month:
+        s = o.get("style", "Не вказано")
+        if s:
+            styles[s] = styles.get(s, 0) + 1
+    top_styles = sorted(styles.items(), key=lambda x: -x[1])[:5]
+    styles_text = "\n".join(f"  {k}: {v}" for k, v in top_styles)
+
+    text = (
+        f"📊 *Статистика InSilver*\n"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"💰 *Фінанси за місяць*\n"
+        f"  Вага виготовлено: *{month_weight:.1f} г*\n"
+        f"  Виручка: *{month_revenue:,} грн*\n\n"
+        f"📦 *Замовлення*\n"
+        f"  За тиждень: *{len(week)}*\n"
+        f"  За місяць: *{len(month)}*\n\n"
+        f"📡 *Звідки клієнти*\n{sources_text or '  немає даних'}\n\n"
+        f"🔗 *Топ плетінь*\n{styles_text or '  немає даних'}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -908,6 +959,7 @@ def main():
     app.add_handler(CommandHandler("facts", facts_cmd))
     app.add_handler(CommandHandler("delfact", delfact_cmd))
     app.add_handler(CommandHandler("orders", orders_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("search", search_cmd))
     app.add_handler(CommandHandler("order", order_cmd))
     app.add_handler(CommandHandler("neworder", neworder_cmd))
