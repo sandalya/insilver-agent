@@ -15,6 +15,7 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 OWNER_ID = int(os.getenv("OWNER_CHAT_ID"))
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", str(OWNER_ID)).split(",")]
 ORDERS_FILE = "orders.json"
 CHAT_LOG_FILE = "logs/conversations.log"
 
@@ -22,7 +23,7 @@ client = OpenAI(api_key=OPENAI_KEY)
 logging.basicConfig(level=logging.INFO)
 user_states = {}
 chat_histories = {}
-admin_mode = False  # глобальний стан адмін режиму
+admin_modes = {}  # admin_modes[chat_id] = True/False
 
 def get_state(chat_id):
     if chat_id not in user_states:
@@ -96,12 +97,10 @@ def needs_escalation(text):
     return any(k in text.lower() for k in ESCALATION_KEYWORDS)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global admin_mode
     chat_id = update.effective_chat.id
     chat_histories[chat_id] = []
     log_conv(chat_id, update.effective_user.username, "in", "/start")
-    if chat_id == OWNER_ID and admin_mode:
-        admin_mode = False
+    admin_modes[chat_id] = False
     await update.message.reply_text(
         "Вітаємо в InSilver! 🩶\n\nМи виготовляємо вироби зі срібла 925°\n"
         "Ланцюжки, браслети, кулони, печатки, набори\n\n"
@@ -109,13 +108,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global admin_mode
-    if update.effective_chat.id != OWNER_ID:
+    chat_id = update.effective_chat.id
+    if chat_id not in ADMIN_IDS:
         await update.message.reply_text("Ця команда недоступна.")
         return
-    admin_mode = not admin_mode
-    chat_histories[OWNER_ID] = []
-    if admin_mode:
+    admin_modes[chat_id] = not admin_modes.get(chat_id, False)
+    chat_histories[chat_id] = []
+    if admin_modes[chat_id]:
         facts = load_facts()
         await update.message.reply_text(
             "🔧 Режим адміна увімкнено\n\n"
@@ -130,8 +129,9 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("✅ Режим адміна вимкнено. Повертаємось до звичайного режиму.")
 
+
 async def facts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != OWNER_ID:
+    if update.effective_chat.id not in ADMIN_IDS:
         return
     facts = load_facts()
     if not facts:
@@ -164,7 +164,7 @@ async def order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Оформлюємо замовлення! 📝\n\n" + ORDER_QUESTIONS[0][1])
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != OWNER_ID:
+    if update.effective_chat.id not in ADMIN_IDS:
         await update.message.reply_text("Ця команда тільки для адміна.")
         return
     orders = load_orders()
@@ -184,7 +184,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 async def setstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != OWNER_ID:
+    if update.effective_chat.id not in ADMIN_IDS:
         return
     args = context.args
     if len(args) < 2:
@@ -216,7 +216,6 @@ async def setstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global admin_mode
     chat_id = update.effective_chat.id
     text = update.message.text
     user = update.effective_user
@@ -224,7 +223,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log_conv(chat_id, username, "in", text)
 
-    is_admin_chat = (chat_id == OWNER_ID and admin_mode)
+    is_admin_chat = (chat_id in ADMIN_IDS and admin_modes.get(chat_id, False))
 
     state = get_state(chat_id)
 
