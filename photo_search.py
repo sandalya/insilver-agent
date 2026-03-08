@@ -44,6 +44,14 @@ def find_photo(query: str, chat_id: int = 0) -> str | None:
                 if item["photo"] and os.path.exists(item["photo"]):
                     candidates.append(item["photo"])
 
+    # по original_text
+    if not candidates:
+        for item in PHOTO_INDEX:
+            text = (item.get("original_text") or "").lower()
+            if text and any(word in text for word in q.split() if len(word) > 2):
+                if item["photo"] and os.path.exists(item["photo"]):
+                    candidates.append(item["photo"])
+
     # по типу виробу
     if not candidates:
         for item_type, roots in TYPE_ROOTS.items():

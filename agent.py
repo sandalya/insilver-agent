@@ -27,6 +27,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from knowledge import SYSTEM_PROMPT, ESCALATION_KEYWORDS
 from photo_search import find_photo, wants_photo
+from web_server import generate_token
 from learned_knowledge import load_facts, save_fact, get_facts_for_prompt
 
 load_dotenv()
@@ -661,11 +662,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
             with open(ORDERS_FILE, "w", encoding="utf-8") as f:
                 json.dump(orders, f, ensure_ascii=False, indent=2)
+            # списуємо срібло з балансу
+            s = load_silver()
+            s["used"] = round(s["used"] + weight_actual, 2)
+            s["history"].append({
+                "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                "action": "замовлення",
+                "grams": -weight_actual,
+                "order_id": oid,
+            })
+            save_silver(s)
+            balance = round(s["total"] - s["used"], 1)
+
             state["waiting_weight"] = None
             await update.message.reply_text(
                 f"✅ {oid} — вага {weight_actual}г\n"
                 f"Ціна за грам: {price_per_gram} грн\n"
-                f"Сума: {total_price} грн"
+                f"Сума: {total_price} грн\n\n"
+                f"🥈 Залишок срібла: {balance} г",
             )
         except ValueError:
             await update.message.reply_text("Введіть число, наприклад: 23.5")
@@ -708,8 +722,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # фото
     if wants_photo(text, chat_id):
         photo_path = find_photo(text, chat_id)
+        logging.info(f"PHOTO SEARCH: '{text}' -> {photo_path}")
         if photo_path and os.path.exists(photo_path):
             await update.message.reply_photo(photo=open(photo_path, "rb"), caption="Ось приклад з нашої майстерні 🩶")
+            return
+        else:
+            await update.message.reply_text("Фото по цьому запиту не знайдено. Спробуйте інший опис 🩶")
+            return
             log_conv(chat_id, "bot", "out", f"[фото: {photo_path}]")
             if not is_admin_chat:
                 return
@@ -782,7 +801,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     photo = update.message.photo[-1]
-    caption = update.message.caption or ""
+    caption = (
+        update.message.caption or
+        update.message.text or
+        (update.message.forward_origin and getattr(update.message.forward_origin, "sender_name", "")) or
+        ""
+    )
+    # якщо форвард — беремо текст з оригінального повідомлення
+    if not caption and update.message.forward_date:
+        caption = update.message.caption or ""
 
     if not caption:
         await update.message.reply_text("Додайте підпис до фото з описом виробу. Наприклад: браслет Бісмарк чорніння 25г [R] Режим адміна]")
@@ -952,6 +979,75 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+async def web_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in ADMIN_IDS:
+        return
+    token = generate_token(chat_id)
+    # визначаємо IP
+    import socket
+    ip = "192.168.72.210"
+    url = f"http://{ip}:8000/auth/{token}"
+    await update.message.reply_text(
+        f"🌐 Ваша панель управління:\n{url}\n\n"
+        f"Посилання діє 24 години."
+    )
+
+
+SILVER_FILE = "silver_balance.json"
+
+def load_silver():
+    if not os.path.exists(SILVER_FILE):
+        return {"total": 0, "used": 0, "history": []}
+    with open(SILVER_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_silver(data):
+    with open(SILVER_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+async def silver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in ADMIN_IDS:
+        return
+    s = load_silver()
+    balance = s["total"] - s["used"]
+    await update.message.reply_text(
+        f"🥈 *Баланс срібла*\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"Всього куплено: *{s['total']} г*\n"
+        f"Використано: *{s['used']} г*\n"
+        f"Залишок: *{round(balance, 1)} г*\n\n"
+        f"{'⚠️ Мало срібла! Час поповнити.' if balance < 100 else '✅ Запас є.'}",
+        parse_mode="Markdown"
+    )
+
+async def addsilver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in ADMIN_IDS:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Використання: /addsilver 500")
+        return
+    try:
+        grams = float(args[0].replace(",", "."))
+        s = load_silver()
+        s["total"] += grams
+        s["history"].append({
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "action": "купівля",
+            "grams": grams,
+        })
+        save_silver(s)
+        balance = s["total"] - s["used"]
+        await update.message.reply_text(
+            f"✅ Додано *{grams} г* срібла\n"
+            f"Поточний залишок: *{round(balance, 1)} г*",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("Введіть число, наприклад: /addsilver 500")
+
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -959,6 +1055,9 @@ def main():
     app.add_handler(CommandHandler("facts", facts_cmd))
     app.add_handler(CommandHandler("delfact", delfact_cmd))
     app.add_handler(CommandHandler("orders", orders_cmd))
+    app.add_handler(CommandHandler("silver", silver_cmd))
+    app.add_handler(CommandHandler("addsilver", addsilver_cmd))
+    app.add_handler(CommandHandler("web", web_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("search", search_cmd))
     app.add_handler(CommandHandler("order", order_cmd))
