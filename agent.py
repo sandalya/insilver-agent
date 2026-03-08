@@ -2,11 +2,11 @@ import os
 import json
 import logging
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from openai import OpenAI
 from dotenv import load_dotenv
-from knowledge import SYSTEM_PROMPT, ORDER_QUESTIONS, ESCALATION_KEYWORDS
+from knowledge import SYSTEM_PROMPT, ESCALATION_KEYWORDS
 from photo_search import find_photo, wants_photo
 from learned_knowledge import load_facts, save_fact, get_facts_for_prompt
 
@@ -23,11 +23,47 @@ client = OpenAI(api_key=OPENAI_KEY)
 logging.basicConfig(level=logging.INFO)
 user_states = {}
 chat_histories = {}
-admin_modes = {}  # admin_modes[chat_id] = True/False
+admin_modes = {}
+
+# ===== КРОКИ АНКЕТИ =====
+STEPS = [
+    {"key": "source", "admin_only": True, "text": "Звідки клієнт?",
+     "options": ["Telegram", "Viber", "Телефон", "OLX", "Сайт", "Інше ✏️"]},
+    {"key": "type", "text": "Що замовляємо?",
+     "options": ["Ланцюжок", "Браслет", "Хрестик", "Кулон", "Печатка", "Набір", "Інше ✏️"]},
+    {"key": "style", "text": "Плетіння?",
+     "options": ["Бісмарк", "Козацьке", "Рамзес", "Лисячий хвіст", "Візантія", "Водоспад", "Якірне", "Фараон", "Інше ✏️"]},
+    {"key": "size", "text": "Довжина (см)?",
+     "options": ["40см", "45см", "50см", "55см", "60см", "17см", "18см", "20см", "Інше ✏️"]},
+    {"key": "weight", "text": "Маса виробу?",
+     "options": ["Тонкий ~3-7г", "Середній ~8-15г", "Масивний ~20г+", "Не знаю ✏️"]},
+    {"key": "coating", "text": "Покриття?",
+     "options": ["Срібло біле", "Чорніння", "Інше ✏️"]},
+    {"key": "clasp", "text": "Застібка?",
+     "options": ["Карабін", "Коробочка 600грн", "Коробочка XL 1500грн", "Інше ✏️"]},
+    {"key": "note", "text": "Додатково?\n(дедлайн, гравіювання, інше)",
+     "options": ["Немає", "Є дедлайн ✏️", "Гравіювання тексту 500грн", "Гравіювання малюнку 700грн", "Інше ✏️"]},
+    {"key": "contact", "text": "Контакт клієнта?\n(імʼя + телефон або Telegram)", "options": None},
+]
+
+def get_steps_for(is_admin):
+    return [s for s in STEPS if not s.get("admin_only") or is_admin]
+
+def make_keyboard(options):
+    buttons = []
+    row = []
+    for i, opt in enumerate(options):
+        row.append(InlineKeyboardButton(opt, callback_data=f"ans:{opt}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(buttons)
 
 def get_state(chat_id):
     if chat_id not in user_states:
-        user_states[chat_id] = {"step": None, "data": {}}
+        user_states[chat_id] = {"step": None, "data": {}, "waiting_text": False, "is_admin_order": False}
     return user_states[chat_id]
 
 def get_history(chat_id):
@@ -56,6 +92,50 @@ def save_order(data):
         json.dump(orders, f, ensure_ascii=False, indent=2)
     return oid
 
+def order_summary(oid, d, mention=""):
+    source = f"Звідки: {d.get('source')}\n" if d.get('source') else ""
+    return (
+        f"🆕 НОВЕ ЗАМОВЛЕННЯ {oid}{mention}\n\n"
+        f"{source}"
+        f"Тип: {d.get('type','—')} — {d.get('style','—')}\n"
+        f"Довжина: {d.get('size','—')} | Маса: {d.get('weight','—')}\n"
+        f"Покриття: {d.get('coating','—')} | Застібка: {d.get('clasp','—')}\n"
+        f"Додатково: {d.get('note','—')}\n"
+        f"Контакт: {d.get('contact','—')}\n\n"
+        f"/setstatus {oid} in_progress"
+    )
+
+async def send_step(chat_id, context, steps, step_idx):
+    step = steps[step_idx]
+    total = len(steps)
+    text = f"[{step_idx+1}/{total}] {step['text']}"
+    if step["options"]:
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=make_keyboard(step["options"]))
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=text)
+
+async def finish_order(chat_id, username, context):
+    state = get_state(chat_id)
+    d = state["data"]
+    oid = save_order(d)
+    state["step"] = None
+    state["data"] = {}
+    state["waiting_text"] = False
+
+    client_summary = (
+        f"✅ Замовлення прийнято! {oid}\n\n"
+        f"Тип: {d.get('type','—')} — {d.get('style','—')}\n"
+        f"Довжина: {d.get('size','—')} | Маса: {d.get('weight','—')}\n"
+        f"Покриття: {d.get('coating','—')} | Застібка: {d.get('clasp','—')}\n"
+        f"Додатково: {d.get('note','—')}\n"
+        f"Контакт: {d.get('contact','—')}\n\n"
+        f"Владислав зв'яжеться з вами 🩶"
+    )
+    await context.bot.send_message(chat_id=chat_id, text=client_summary)
+
+    mention = f"\n@{username}" if username else ""
+    await context.bot.send_message(chat_id=OWNER_ID, text=order_summary(oid, d, mention))
+
 def ask_ai(chat_id, text, is_admin=False):
     try:
         history = get_history(chat_id)
@@ -63,23 +143,16 @@ def ask_ai(chat_id, text, is_admin=False):
         if len(history) > 10:
             history = history[-10:]
         chat_histories[chat_id] = history
-
-        extra_knowledge = get_facts_for_prompt()
-        system = SYSTEM_PROMPT + extra_knowledge
-
+        extra = get_facts_for_prompt()
+        system = SYSTEM_PROMPT + extra
         if is_admin:
             system += """
 
 ТИ ЗАРАЗ В РЕЖИМІ АДМІНА — спілкуєшся з Владиславом (власником InSilver).
-
-Твоя поведінка:
-1. Якщо Владислав пише факт про виріб, ціну, умову роботи — перефразуй його коротко і запитай підтвердження. Додай в кінці: LEARN|||перефразований факт
-2. Якщо Владислав пише "так" або "вірно" після твого перефразування — збережи факт. Додай: CONFIRM|||
-3. Якщо Владислав пише як клієнт (питає ціну, про виріб) — просто відповідай як звичайний клієнт
-4. Якщо Владислав виправляє — зрозумій виправлення і перефразуй знову
-
-Завжди додавай в кінці відповіді: [🔧 Режим адміна]"""
-
+1. Якщо Владислав пише факт — перефразуй і запитай підтвердження. Додай: LEARN|||перефразований факт
+2. Якщо відповідає "так/вірно" — збережи. Додай: CONFIRM|||
+3. Якщо питає як клієнт — відповідай нормально
+Завжди додавай в кінці: [🔧 Режим адміна]"""
         r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "system", "content": system}] + history,
@@ -96,15 +169,16 @@ def ask_ai(chat_id, text, is_admin=False):
 def needs_escalation(text):
     return any(k in text.lower() for k in ESCALATION_KEYWORDS)
 
+# ===== КОМАНДИ =====
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     chat_histories[chat_id] = []
-    log_conv(chat_id, update.effective_user.username, "in", "/start")
     admin_modes[chat_id] = False
     await update.message.reply_text(
         "Вітаємо в InSilver! 🩶\n\nМи виготовляємо вироби зі срібла 925°\n"
         "Ланцюжки, браслети, кулони, печатки, набори\n\n"
-        "Команди:\n/order — оформити замовлення\n/catalog — каталог\n/contacts — контакти"
+        "/order — оформити замовлення\n/catalog — каталог\n/contacts — контакти"
     )
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,17 +192,16 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         facts = load_facts()
         await update.message.reply_text(
             "🔧 Режим адміна увімкнено\n\n"
-            "Що можеш робити:\n"
-            "• Писати факти про вироби — я запам'ятаю\n"
+            "• Писати факти про вироби — запам'ятаю\n"
             "• Тестувати бота як клієнт\n"
-            "• Виправляти мої відповіді\n\n"
-            f"Збережено фактів: {len(facts)}\n\n"
-            "/admin — вимкнути режим\n"
-            "/facts — переглянути збережені знання"
+            "• /neworder — нове замовлення вручну\n"
+            "• /orders — всі замовлення\n"
+            "• /facts — збережені знання\n\n"
+            f"Збережено фактів: {len(facts)}\n"
+            "/admin — вимкнути режим\n\n[🔧 Режим адміна]"
         )
     else:
-        await update.message.reply_text("✅ Режим адміна вимкнено. Повертаємось до звичайного режиму.")
-
+        await update.message.reply_text("✅ Режим адміна вимкнено.")
 
 async def facts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in ADMIN_IDS:
@@ -138,60 +211,55 @@ async def facts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Збережених знань поки немає.")
         return
     lines = [f"[{f['date']}] {f['fact']}" for f in facts]
-    await update.message.reply_text(
-        f"📚 Збережені знання ({len(facts)}):\n\n" + "\n\n".join(lines)
-    )
+    await update.message.reply_text(f"📚 Збережені знання ({len(facts)}):\n\n" + "\n\n".join(lines))
 
-async def contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Telegram: @InSilver_925\nТелефон: 0936931493\n"
-        "Сайт: www.insilver.pp.ua\nГрупа: t.me/insilver_ua\nOLX: insilver.olx.ua"
-    )
-
-async def catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Каталог InSilver (срібло 925°):\n\n"
-        "Ланцюжки — 15 видів\nБраслети — 14 видів\n"
-        "Кулони, хрестики, ладанки\nПечатки та персні\nНабори\n\n"
-        "Фото: www.insilver.pp.ua"
-    )
-
-async def order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_conv(update.effective_chat.id, update.effective_user.username, "in", "/order")
-    state = get_state(update.effective_chat.id)
-    state["step"] = 0
-    state["data"] = {}
-    await update.message.reply_text("Оформлюємо замовлення! 📝\n\n" + ORDER_QUESTIONS[0][1])
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def orders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in ADMIN_IDS:
-        await update.message.reply_text("Ця команда тільки для адміна.")
         return
     orders = load_orders()
     if not orders:
         await update.message.reply_text("Замовлень поки немає.")
         return
     STATUS_EMOJI = {"new": "🆕", "in_progress": "⚙️", "ready": "✅", "sent": "📦"}
-    lines = ["📋 Поточні замовлення:\n"]
+    lines = ["📋 Замовлення (останні 10):\n"]
     for o in reversed(orders[-10:]):
-        emoji = STATUS_EMOJI.get(o.get("status", "new"), "🆕")
+        e = STATUS_EMOJI.get(o.get("status", "new"), "🆕")
         lines.append(
-            f"{emoji} {o['id']} — {o.get('type','?')} {o.get('style','')}\n"
-            f"   Клієнт: {o.get('contact','—')}\n"
-            f"   Дедлайн: {o.get('note','—')}\n"
-            f"   Статус: {o.get('status','new')}\n"
+            f"{e} {o['id']} — {o.get('type','?')} {o.get('style','')}\n"
+            f"   {o.get('contact','—')} | {o.get('size','—')}\n"
+            f"   Додатково: {o.get('note','—')}\n"
         )
     await update.message.reply_text("\n".join(lines))
+
+async def neworder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in ADMIN_IDS:
+        await update.message.reply_text("Ця команда тільки для адміна.")
+        return
+    state = get_state(chat_id)
+    state["step"] = 0
+    state["data"] = {}
+    state["waiting_text"] = False
+    state["is_admin_order"] = True
+    steps = get_steps_for(True)
+    await send_step(chat_id, context, steps, 0)
+
+async def order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    state = get_state(chat_id)
+    state["step"] = 0
+    state["data"] = {}
+    state["waiting_text"] = False
+    state["is_admin_order"] = False
+    steps = get_steps_for(False)
+    await send_step(chat_id, context, steps, 0)
 
 async def setstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in ADMIN_IDS:
         return
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text(
-            "Використання:\n/setstatus IS-001 in_progress\n\n"
-            "Статуси: new, in_progress, ready, sent"
-        )
+        await update.message.reply_text("Використання:\n/setstatus IS-001 in_progress\n\nСтатуси: new, in_progress, ready, sent")
         return
     oid, new_status = args[0].upper(), args[1].lower()
     valid = ["new", "in_progress", "ready", "sent"]
@@ -211,98 +279,122 @@ async def setstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(ORDERS_FILE, "w", encoding="utf-8") as f:
         json.dump(orders, f, ensure_ascii=False, indent=2)
     STATUS_EMOJI = {"new": "🆕", "in_progress": "⚙️", "ready": "✅", "sent": "📦"}
+    await update.message.reply_text(f"{STATUS_EMOJI.get(new_status)} {oid} — статус змінено на {new_status}")
+
+async def contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"{STATUS_EMOJI.get(new_status)} {oid} — статус змінено на {new_status}"
+        "Telegram: @InSilver_925\nТелефон: 0936931493\n"
+        "Сайт: www.insilver.pp.ua\nГрупа: t.me/insilver_ua\nOLX: insilver.olx.ua"
     )
+
+async def catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Каталог InSilver (срібло 925°):\n\nЛанцюжки — 15 видів\nБраслети — 14 видів\n"
+        "Кулони, хрестики, ладанки\nПечатки та персні\nНабори\n\nФото: www.insilver.pp.ua"
+    )
+
+# ===== CALLBACK (кнопки) =====
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    data = query.data
+
+    if not data.startswith("ans:"):
+        return
+
+    value = data[4:]
+    state = get_state(chat_id)
+
+    if state["step"] is None:
+        return
+
+    is_admin_order = state.get("is_admin_order", False)
+    steps = get_steps_for(is_admin_order)
+
+    if value.endswith("✏️") or value == "Не знаю ✏️" or value == "Є дедлайн ✏️":
+        state["waiting_text"] = True
+        key = steps[state["step"]]["key"]
+        hints = {
+            "type": "Введіть тип виробу:",
+            "style": "Введіть назву плетіння:",
+            "size": "Введіть довжину в см:",
+            "weight": "Введіть масу в грамах:",
+            "coating": "Введіть покриття:",
+            "clasp": "Введіть тип застібки:",
+            "note": "Введіть додаткову інформацію:",
+            "source": "Введіть звідки клієнт:",
+        }
+        await query.message.reply_text(hints.get(key, "Введіть значення:"))
+        return
+
+    # зберігаємо відповідь
+    key = steps[state["step"]]["key"]
+    state["data"][key] = value
+    await query.message.edit_reply_markup(reply_markup=None)
+
+    state["step"] += 1
+    if state["step"] < len(steps):
+        await send_step(chat_id, context, steps, state["step"])
+    else:
+        username = query.from_user.username or query.from_user.first_name
+        await finish_order(chat_id, username, context)
+
+# ===== ТЕКСТОВІ ПОВІДОМЛЕННЯ =====
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
     user = update.effective_user
     username = user.username or user.first_name or str(chat_id)
-
     log_conv(chat_id, username, "in", text)
 
     is_admin_chat = (chat_id in ADMIN_IDS and admin_modes.get(chat_id, False))
-
     state = get_state(chat_id)
+    is_admin_order = state.get("is_admin_order", False)
+    steps = get_steps_for(is_admin_order)
 
-    # анкета замовлення — тільки не в адмін режимі
-    if state["step"] is not None and not is_admin_chat:
-        state["data"][ORDER_QUESTIONS[state["step"]][0]] = text
-        if state["step"] < len(ORDER_QUESTIONS) - 1:
-            state["step"] += 1
-            reply = ORDER_QUESTIONS[state["step"]][1]
-            await update.message.reply_text(reply)
-            log_conv(chat_id, "bot", "out", reply)
+    # очікуємо вільний текст в анкеті — ПЕРШОЧЕРГОВА ПЕРЕВІРКА
+    if state["step"] is not None and (state.get("waiting_text") or steps[state["step"]]["options"] is None):
+        key = steps[state["step"]]["key"]
+        state["data"][key] = text
+        state["waiting_text"] = False
+        state["step"] += 1
+        if state["step"] < len(steps):
+            await send_step(chat_id, context, steps, state["step"])
         else:
-            oid = save_order(state["data"])
-            d = state["data"]
-            state["step"] = None
-            state["data"] = {}
-            summary = (
-                f"✅ Замовлення прийнято! {oid}\n\n"
-                f"Тип виробу: {d.get('type','—')}\n"
-                f"Плетіння: {d.get('style','—')}\n"
-                f"Довжина: {d.get('size','—')} см\n"
-                f"Маса: {d.get('weight','—')} г\n"
-                f"Покриття: {d.get('coating','—')}\n"
-                f"Застібка: {d.get('clasp','—')}\n"
-                f"Додатково: {d.get('note','—')}\n"
-                f"Контакт: {d.get('contact','—')}\n\nВладислав зв'яжеться з вами 🩶"
-            )
-            await update.message.reply_text(summary)
-            log_conv(chat_id, "bot", "out", summary)
-            await context.bot.send_message(
-                chat_id=OWNER_ID,
-                text=f"🆕 НОВЕ ЗАМОВЛЕННЯ {oid}\n\n@{username}\n"
-                     f"Тип: {d.get('type')} — {d.get('style')}\n"
-                     f"Довжина: {d.get('size')} см | Маса: {d.get('weight')} г\n"
-                     f"Покриття: {d.get('coating')} | Застібка: {d.get('clasp')}\n"
-                     f"Додатково: {d.get('note')}\n"
-                     f"Контакт: {d.get('contact')}\n\n"
-                     f"Змінити статус: /setstatus {oid} in_progress"
-            )
+            await finish_order(chat_id, username, context)
         return
 
-    # ескалація — не в адмін режимі
+    # ескалація
     if needs_escalation(text) and not is_admin_chat:
-        reply = "Передаю майстру Владиславу — він відповість найближчим часом 🙏\nТел: 0936931493"
+        reply = "Передаю майстру Владиславу 🙏\nТел: 0936931493"
         await update.message.reply_text(reply)
-        log_conv(chat_id, "bot", "out", reply)
-        await context.bot.send_message(
-            chat_id=OWNER_ID, text=f"⚠️ КЛІЄНТ ПОТРЕБУЄ УВАГИ\n@{username}: {text}"
-        )
+        await context.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ УВАГА\n@{username}: {text}")
         return
 
     # фото
     if wants_photo(text, chat_id):
         photo_path = find_photo(text, chat_id)
         if photo_path and os.path.exists(photo_path):
-            await update.message.reply_photo(
-                photo=open(photo_path, "rb"),
-                caption="Ось приклад з нашої майстерні 🩶"
-            )
+            await update.message.reply_photo(photo=open(photo_path, "rb"), caption="Ось приклад з нашої майстерні 🩶")
             log_conv(chat_id, "bot", "out", f"[фото: {photo_path}]")
             if not is_admin_chat:
                 return
 
-    # AI відповідь
+    # AI
     reply = ask_ai(chat_id, text, is_admin=is_admin_chat)
     if reply is None:
-        reply = "Вибачте, зараз технічна перерва. Спробуйте за кілька хвилин або зателефонуйте: 0936931493 🙏"
-        await context.bot.send_message(
-            chat_id=OWNER_ID, text=f"🔴 OpenAI недоступний!\n@{username}: {text}"
-        )
+        reply = "Вибачте, технічна перерва. Телефонуйте: 0936931493 🙏"
+        await context.bot.send_message(chat_id=OWNER_ID, text=f"🔴 OpenAI недоступний!\n@{username}: {text}")
         await update.message.reply_text(reply)
         return
 
-    # обробка LEARN і CONFIRM в адмін режимі
     clean_reply = reply
     if is_admin_chat and "LEARN|||" in reply:
         parts = reply.split("LEARN|||")
         clean_reply = parts[0].strip()
-        # зберігаємо очікуваний факт тимчасово в стані
         pending_fact = parts[1].split("\n")[0].strip()
         user_states[chat_id]["pending_fact"] = pending_fact
         user_states[chat_id]["pending_original"] = text
@@ -324,11 +416,13 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("facts", facts_cmd))
+    app.add_handler(CommandHandler("orders", orders_cmd))
     app.add_handler(CommandHandler("order", order_cmd))
+    app.add_handler(CommandHandler("neworder", neworder_cmd))
     app.add_handler(CommandHandler("catalog", catalog))
     app.add_handler(CommandHandler("contacts", contacts))
-    app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("setstatus", setstatus_cmd))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("InSilver агент запущено!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
