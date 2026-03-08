@@ -29,6 +29,7 @@ from knowledge import SYSTEM_PROMPT, ESCALATION_KEYWORDS
 from photo_search import find_photo, wants_photo
 from web_server import generate_token
 from learned_knowledge import load_facts, save_fact, get_facts_for_prompt
+from faq import add_faq, find_faq, load_faq
 
 load_dotenv()
 
@@ -712,6 +713,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finish_order(chat_id, username, context)
         return
 
+    # FAQ — перевіряємо тільки для клієнтів
+    if not is_admin_chat:
+        faq_match = find_faq(text, client)
+        if faq_match and os.path.exists(faq_match["photo_path"]):
+            await update.message.reply_photo(
+                photo=open(faq_match["photo_path"], "rb"),
+                caption=faq_match.get("caption") or faq_match["topic"]
+            )
+            log_conv(chat_id, "bot", "out", f"[FAQ: {faq_match['topic']}]")
+            return
+
     # ескалація
     if needs_escalation(text) and not is_admin_chat:
         reply = "Передаю майстру Владиславу 🙏\nТел: 0936931493"
@@ -810,6 +822,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # якщо форвард — беремо текст з оригінального повідомлення
     if not caption and update.message.forward_date:
         caption = update.message.caption or ""
+
+    # FAQ збереження
+    if caption.lower().startswith("faq:"):
+        topic = caption[4:].strip()
+        os.makedirs("faq_photos", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        faq_filename = f"faq_photos/faq_{ts}.jpg"
+        tg_file = await context.bot.get_file(photo.file_id)
+        await tg_file.download_to_drive(faq_filename)
+        # підпис без "FAQ:" — це опис для клієнта
+        client_caption = ""
+        if update.message.caption and chr(10) in update.message.caption:
+            client_caption = update.message.caption.split(chr(10), 1)[1].strip()
+        elif update.message.caption:
+            client_caption = topic
+        add_faq(topic=topic, photo_path=faq_filename, caption=client_caption)
+        faq_items = load_faq()
+        await update.message.reply_text(
+            f"✅ FAQ збережено #{len(faq_items)}\nТема: {topic[:50]}\n\n[🔧 Режим адміна]"
+        )
+        return
 
     if not caption:
         await update.message.reply_text("Додайте підпис до фото з описом виробу. Наприклад: браслет Бісмарк чорніння 25г [R] Режим адміна]")
