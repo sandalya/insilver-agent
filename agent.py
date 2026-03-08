@@ -186,7 +186,7 @@ async def finish_order(chat_id, username, context):
         f"Контакт: {d.get('contact','—')}\n\n"
         f"/setstatus {oid} in_progress"
     )
-    await context.bot.send_message(chat_id=OWNER_ID, text=owner_msg)
+    await context.bot.send_message(chat_id=OWNER_ID, text=owner_msg, reply_markup=make_status_keyboard(oid))
 
 
 # ===== КОМАНДИ =====
@@ -262,23 +262,53 @@ async def delfact_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🗑 Видалено #{idx+1}:\n{removed['fact']}")
 
 
+def make_filter_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🆕 Нові", callback_data="filter:new"),
+            InlineKeyboardButton("⚙️ В роботі", callback_data="filter:in_progress"),
+        ],
+        [
+            InlineKeyboardButton("✅ Готові", callback_data="filter:ready"),
+            InlineKeyboardButton("📦 Відправлені", callback_data="filter:sent"),
+        ],
+        [
+            InlineKeyboardButton("⏸ Призупинені", callback_data="filter:paused"),
+            InlineKeyboardButton("📋 Всі", callback_data="filter:all"),
+        ],
+        [
+            InlineKeyboardButton("🗃 Архів", callback_data="filter:archived"),
+        ],
+    ])
+
+async def show_orders(chat_id, context, filter_status="all"):
+    orders = load_orders()
+    STATUS_EMOJI = {"new": "🆕", "in_progress": "⚙️", "ready": "✅", "sent": "📦", "paused": "⏸", "archived": "🗃"}
+    if filter_status == "archived":
+        filtered = [o for o in orders if o.get("status") == "archived"]
+    elif filter_status != "all":
+        filtered = [o for o in orders if o.get("status", "new") == filter_status and o.get("status") != "archived"]
+    else:
+        filtered = [o for o in orders if o.get("status") != "archived"]
+    if not filtered:
+        await context.bot.send_message(chat_id=chat_id, text="Замовлень з таким статусом немає.")
+        return
+    for o in reversed(filtered[-10:]):
+        e = STATUS_EMOJI.get(o.get("status", "new"), "🆕")
+        text = (
+            f"{e} {o['id']} — {o.get('type','?')} {o.get('style','')}\n"
+            f"Клієнт: {o.get('contact','—')}\n"
+            f"Довжина: {o.get('size','—')} | Маса: {o.get('weight','—')}\n"
+            f"Покриття: {o.get('coating','—')} | Застібка: {o.get('clasp','—')}\n"
+            f"Додатково: {o.get('note','—')}\n"
+            f"Створено: {o.get('created','—')}"
+        )
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=make_status_keyboard(o['id']))
+
 async def orders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in ADMIN_IDS:
         return
-    orders = load_orders()
-    if not orders:
-        await update.message.reply_text("Замовлень поки немає.")
-        return
-    STATUS_EMOJI = {"new": "🆕", "in_progress": "⚙️", "ready": "✅", "sent": "📦"}
-    lines = ["📋 Замовлення (останні 10):\n"]
-    for o in reversed(orders[-10:]):
-        e = STATUS_EMOJI.get(o.get("status", "new"), "🆕")
-        lines.append(
-            f"{e} {o['id']} — {o.get('type','?')} {o.get('style','')}\n"
-            f"   {o.get('contact','—')} | {o.get('size','—')}\n"
-            f"   Додатково: {o.get('note','—')}\n"
-        )
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("Показати замовлення:", reply_markup=make_filter_keyboard())
 
 
 async def neworder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -312,7 +342,7 @@ async def setstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Використання:\n/setstatus IS-001 in_progress\n\nСтатуси: new, in_progress, ready, sent")
         return
     oid, new_status = args[0].upper(), args[1].lower()
-    valid = ["new", "in_progress", "ready", "sent"]
+    valid = ["new", "in_progress", "ready", "sent", "paused", "archived"]
     if new_status not in valid:
         await update.message.reply_text(f"Невірний статус. Доступні: {', '.join(valid)}")
         return
@@ -353,6 +383,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     chat_id = query.message.chat_id
     data = query.data
+
+    if data.startswith("filter:"):
+        filter_status = data.split(":")[1]
+        await query.answer()
+        await show_orders(chat_id, context, filter_status)
+        return
+
+    if data.startswith("status:"):
+        parts = data.split(":")
+        oid, new_status = parts[1], parts[2]
+        STATUS_EMOJI = {"new": "🆕", "in_progress": "⚙️", "ready": "✅", "sent": "📦", "paused": "⏸", "archived": "🗃"}
+        STATUS_NAMES = {"new": "Нове", "in_progress": "В роботі", "ready": "Готово", "sent": "Відправлено", "paused": "Призупинено", "archived": "Архів"}
+        orders = load_orders()
+        for o in orders:
+            if o["id"] == oid:
+                o["status"] = new_status
+                break
+        with open(ORDERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(orders, f, ensure_ascii=False, indent=2)
+        emoji = STATUS_EMOJI.get(new_status)
+        name = STATUS_NAMES.get(new_status)
+        try:
+            import re as _re
+            base_text = _re.sub(r"\n\n[^\n]+ Статус змінено:.*$", "", query.message.text, flags=_re.DOTALL).strip()
+            await query.edit_message_text(
+                text=base_text + f"\n\n{emoji} Статус змінено: {name}",
+                reply_markup=make_status_keyboard(oid)
+            )
+        except Exception:
+            pass
+        await query.answer(f"{emoji} {oid} — {name}")
+        return
 
     if not data.startswith("ans:"):
         return
@@ -599,6 +661,43 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def make_status_keyboard(oid):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚙️ В роботі", callback_data=f"status:{oid}:in_progress"),
+            InlineKeyboardButton("✅ Готово", callback_data=f"status:{oid}:ready"),
+        ],
+        [
+            InlineKeyboardButton("📦 Відправлено", callback_data=f"status:{oid}:sent"),
+            InlineKeyboardButton("⏸ Призупинено", callback_data=f"status:{oid}:paused"),
+        ],
+        [
+            InlineKeyboardButton("🗃 Архівувати", callback_data=f"status:{oid}:archived"),
+        ]
+    ])
+
+
+async def auto_archive(context):
+    orders = load_orders()
+    now = datetime.now()
+    changed = 0
+    for o in orders:
+        if o.get("status") == "sent":
+            try:
+                created = datetime.strptime(o.get("created", ""), "%d.%m.%Y %H:%M")
+                if (now - created).days >= 30:
+                    o["status"] = "archived"
+                    changed += 1
+            except Exception:
+                pass
+    if changed:
+        with open(ORDERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(orders, f, ensure_ascii=False, indent=2)
+        await context.bot.send_message(
+            chat_id=OWNER_ID,
+            text=f"🗃 Автоархів: {changed} замовлень переміщено в архів"
+        )
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -611,6 +710,7 @@ def main():
     app.add_handler(CommandHandler("catalog", catalog))
     app.add_handler(CommandHandler("contacts", contacts))
     app.add_handler(CommandHandler("setstatus", setstatus_cmd))
+    # auto_archive запускається через cron окремо
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
