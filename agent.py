@@ -393,6 +393,52 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await finish_order(chat_id, username, context)
 
 
+async def save_admin_photo(photo_file, caption, chat_id, context):
+    os.makedirs("channel_photos", exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"channel_photos/admin_photo_{ts}.jpg"
+    file = await context.bot.get_file(photo_file.file_id)
+    await file.download_to_drive(filename)
+
+    # витягуємо ключові слова з підпису
+    caption = caption or ""
+    keywords = [w.lower() for w in caption.split() if len(w) > 2]
+
+    # визначаємо тип виробу
+    type_map = {
+        "браслет": ["браслет"], "ланцюжок": ["ланцюжок", "ланцюг", "цепочка"],
+        "кулон": ["кулон"], "обручка": ["обручка", "перстень", "печатка"],
+        "хрестик": ["хрестик"], "сережки": ["сережки"],
+    }
+    item_type = ""
+    for t, words in type_map.items():
+        if any(w in caption.lower() for w in words):
+            item_type = t
+            break
+
+    # додаємо в індекс
+    if os.path.exists("photo_index.json"):
+        with open("photo_index.json", "r", encoding="utf-8") as f:
+            index = json.load(f)
+    else:
+        index = []
+
+    index.append({
+        "photo": filename,
+        "date": datetime.now().strftime("%d.%m.%Y"),
+        "original_text": caption,
+        "type": item_type,
+        "name": caption[:50],
+        "keywords": keywords,
+        "description": caption,
+    })
+
+    with open("photo_index.json", "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, indent=2)
+
+    return filename
+
+
 # ===== ТЕКСТ =====
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -465,6 +511,94 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_conv(chat_id, "bot", "out", clean_reply)
 
 
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin_chat = chat_id in ADMIN_IDS and admin_modes.get(chat_id, False)
+
+    if not is_admin_chat:
+        await update.message.reply_text("Дякуємо за фото! Якщо хочете замовити — напишіть /order 🩶")
+        return
+
+    photo = update.message.photo[-1]
+    caption = update.message.caption or ""
+
+    if not caption:
+        await update.message.reply_text(
+            "Додайте підпис до фото з описом виробу\n"
+            "Наприклад: браслет Бісмарк чорніння 25г\n\n[🔧 Режим адміна]"
+        )
+        return
+
+    filename = await save_admin_photo(photo, caption, chat_id, context)
+    await update.message.reply_text(
+        f"✅ Фото збережено!\n"
+        f"Опис: {caption}\n"
+        f"Файл: {filename}\n\n"
+        f"Клієнти знайдуть його по запиту 🩶\n\n[🔧 Режим адміна]"
+    )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin_chat = chat_id in ADMIN_IDS and admin_modes.get(chat_id, False)
+
+    if not is_admin_chat:
+        await update.message.reply_text("Дякуємо за фото! Якщо хочете замовити - напишіть /order")
+        return
+
+    photo = update.message.photo[-1]
+    caption = update.message.caption or ""
+
+    if not caption:
+        await update.message.reply_text("Додайте підпис до фото з описом виробу. Наприклад: браслет Бісмарк чорніння 25г [R] Режим адміна]")
+        return
+
+    os.makedirs("channel_photos", exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"channel_photos/admin_photo_{ts}.jpg"
+    tg_file = await context.bot.get_file(photo.file_id)
+    await tg_file.download_to_drive(filename)
+
+    keywords = [w.lower() for w in caption.split() if len(w) > 2]
+    type_map = {
+        "браслет": ["браслет"],
+        "ланцюжок": ["ланцюжок", "ланцюг", "цепочка"],
+        "кулон": ["кулон"],
+        "обручка": ["обручка", "перстень", "печатка"],
+        "хрестик": ["хрестик"],
+        "сережки": ["сережки"],
+    }
+    item_type = ""
+    for t, words in type_map.items():
+        if any(w in caption.lower() for w in words):
+            item_type = t
+            break
+
+    if os.path.exists("photo_index.json"):
+        with open("photo_index.json", "r", encoding="utf-8") as f:
+            index = json.load(f)
+    else:
+        index = []
+
+    index.append({
+        "photo": filename,
+        "date": datetime.now().strftime("%d.%m.%Y"),
+        "original_text": caption,
+        "type": item_type,
+        "name": caption[:50],
+        "keywords": keywords,
+        "description": caption,
+    })
+
+    with open("photo_index.json", "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, indent=2)
+
+    await update.message.reply_text(
+        "Фото збережено! Опис: " + caption + " [R] Режим адміна]"
+    )
+
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -478,6 +612,8 @@ def main():
     app.add_handler(CommandHandler("contacts", contacts))
     app.add_handler(CommandHandler("setstatus", setstatus_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("InSilver агент запущено!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
