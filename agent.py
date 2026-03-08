@@ -306,6 +306,41 @@ async def show_orders(chat_id, context, filter_status="all"):
         )
         await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=make_status_keyboard(o['id']))
 
+async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in ADMIN_IDS:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Використання: /search Сашок  або  /search IS-011")
+        return
+    query_str = " ".join(args).lower()
+    orders = load_orders()
+    results = []
+    for o in orders:
+        if (query_str in o.get("id", "").lower() or
+            query_str in o.get("contact", "").lower() or
+            query_str in o.get("type", "").lower() or
+            query_str in o.get("style", "").lower()):
+            results.append(o)
+
+    if not results:
+        await update.message.reply_text(f"Нічого не знайдено по запиту: {query_str}")
+        return
+
+    STATUS_EMOJI = {"new": "🆕", "in_progress": "⚙️", "ready": "✅", "sent": "📦", "paused": "⏸", "archived": "🗃"}
+    await update.message.reply_text(f"Знайдено: {len(results)}")
+    for o in results:
+        e = STATUS_EMOJI.get(o.get("status", "new"), "🆕")
+        text = (
+            f"{e} {o['id']} — {o.get('type','?')} {o.get('style','')}\n"
+            f"Клієнт: {o.get('contact','—')}\n"
+            f"Довжина: {o.get('size','—')} | Маса: {o.get('weight','—')}\n"
+            f"Покриття: {o.get('coating','—')} | Застібка: {o.get('clasp','—')}\n"
+            f"Додатково: {o.get('note','—')}\n"
+            f"Створено: {o.get('created','—')}"
+        )
+        await update.message.reply_text(text, reply_markup=make_status_keyboard(o['id']))
+
 async def orders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in ADMIN_IDS:
         return
@@ -820,6 +855,7 @@ def main():
     app.add_handler(CommandHandler("facts", facts_cmd))
     app.add_handler(CommandHandler("delfact", delfact_cmd))
     app.add_handler(CommandHandler("orders", orders_cmd))
+    app.add_handler(CommandHandler("search", search_cmd))
     app.add_handler(CommandHandler("order", order_cmd))
     app.add_handler(CommandHandler("neworder", neworder_cmd))
     app.add_handler(CommandHandler("catalog", catalog))
