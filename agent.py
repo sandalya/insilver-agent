@@ -384,6 +384,52 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     data = query.data
 
+    if data.startswith("edit:"):
+        oid = data.split(":")[1]
+        await query.message.reply_text(f"Що редагуємо в {oid}?", reply_markup=make_edit_keyboard(oid))
+        await query.answer()
+        return
+
+    if data.startswith("editfield:"):
+        parts = data.split(":")
+        oid, field = parts[1], parts[2]
+        if field == "cancel":
+            await query.message.delete()
+            await query.answer()
+            return
+        field_names = {
+            "contact": "контакт клієнта",
+            "size": "довжину (см)",
+            "weight": "масу (г)",
+            "coating": "покриття",
+            "clasp": "застібку",
+            "note": "додаткову інформацію",
+        }
+        state = get_state(chat_id)
+        state["editing"] = {"oid": oid, "field": field}
+        await query.message.reply_text(f"Введіть новий {field_names.get(field, field)} для {oid}:")
+        await query.answer()
+        return
+
+    if data.startswith("delete:"):
+        oid = data.split(":")[1]
+        await query.message.reply_text(
+            f"Видалити замовлення {oid}?",
+            reply_markup=make_confirm_delete_keyboard(oid)
+        )
+        await query.answer()
+        return
+
+    if data.startswith("confirmdelete:"):
+        oid = data.split(":")[1]
+        orders = load_orders()
+        orders = [o for o in orders if o["id"] != oid]
+        with open(ORDERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(orders, f, ensure_ascii=False, indent=2)
+        await query.message.edit_text(f"🗑 Замовлення {oid} видалено.")
+        await query.answer()
+        return
+
     if data.startswith("filter:"):
         filter_status = data.split(":")[1]
         await query.answer()
@@ -513,6 +559,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin_chat = chat_id in ADMIN_IDS and admin_modes.get(chat_id, False)
     state = get_state(chat_id)
     steps = STEPS_ADMIN if state.get("is_admin_order") else STEPS_CLIENT
+
+    # редагування замовлення
+    if state.get("editing"):
+        ed = state["editing"]
+        oid, field = ed["oid"], ed["field"]
+        orders = load_orders()
+        for o in orders:
+            if o["id"] == oid:
+                o[field] = text
+                break
+        with open(ORDERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(orders, f, ensure_ascii=False, indent=2)
+        state["editing"] = None
+        await update.message.reply_text(f"✅ {oid} оновлено!")
+        return
 
     # вільний текст в анкеті
     if state["step"] is not None and (state.get("waiting_text") or steps[state["step"]]["options"] is None):
@@ -673,6 +734,37 @@ def make_status_keyboard(oid):
         ],
         [
             InlineKeyboardButton("🗃 Архівувати", callback_data=f"status:{oid}:archived"),
+            InlineKeyboardButton("✏️ Редагувати", callback_data=f"edit:{oid}"),
+        ],
+        [
+            InlineKeyboardButton("🗑 Видалити", callback_data=f"delete:{oid}"),
+        ]
+    ])
+
+def make_edit_keyboard(oid):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👤 Контакт", callback_data=f"editfield:{oid}:contact"),
+            InlineKeyboardButton("📏 Розмір", callback_data=f"editfield:{oid}:size"),
+        ],
+        [
+            InlineKeyboardButton("⚖️ Маса", callback_data=f"editfield:{oid}:weight"),
+            InlineKeyboardButton("🎨 Покриття", callback_data=f"editfield:{oid}:coating"),
+        ],
+        [
+            InlineKeyboardButton("🔗 Застібка", callback_data=f"editfield:{oid}:clasp"),
+            InlineKeyboardButton("📝 Додатково", callback_data=f"editfield:{oid}:note"),
+        ],
+        [
+            InlineKeyboardButton("◀️ Назад", callback_data=f"editfield:{oid}:cancel"),
+        ]
+    ])
+
+def make_confirm_delete_keyboard(oid):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Так, видалити", callback_data=f"confirmdelete:{oid}"),
+            InlineKeyboardButton("❌ Скасувати", callback_data=f"editfield:{oid}:cancel"),
         ]
     ])
 
