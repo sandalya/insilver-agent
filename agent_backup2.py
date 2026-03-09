@@ -38,7 +38,6 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 OWNER_ID = int(os.getenv("OWNER_CHAT_ID"))
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", str(OWNER_ID)).split(",")]
 ORDERS_FILE = "orders.json"
-MONITOR_CHAT_ID = int(os.getenv("MONITOR_CHAT_ID", "0"))
 CHAT_LOG_FILE = "logs/conversations.log"
 ADMIN_MODES_FILE = "admin_modes.json"
 
@@ -117,16 +116,6 @@ def log_conv(chat_id, username, direction, text):
         f.write(f"[{ts}] {who} {arrow} {text}\n")
 
 
-async def monitor_log(context, username, user_text, bot_reply, source="AI", is_admin=False):
-    if not MONITOR_CHAT_ID:
-        return
-    try:
-        role = "[ADMIN]" if is_admin else "[client]"
-        msg = role + " " + str(username) + ":\n" + user_text + "\n\n<< Bot [" + source + "]:\n" + bot_reply
-        await context.bot.send_message(chat_id=MONITOR_CHAT_ID, text=msg)
-    except Exception as e:
-        logging.error("Monitor error: " + str(e))
-
 def load_orders():
     if os.path.exists(ORDERS_FILE):
         with open(ORDERS_FILE, "r", encoding="utf-8") as f:
@@ -150,7 +139,7 @@ def ask_ai(chat_id, text, is_admin=False):
         if len(history) > 10:
             history = history[-10:]
         chat_histories[chat_id] = history
-        system = SYSTEM_PROMPT + get_facts_for_prompt() + "\n\nПеред кожною відповіддю додай рядок: REASON|||одне речення чому саме така відповідь (наприклад: клієнт питає про ціну, клієнт хоче замовити, клієнт питає про терміни). Після цього рядку — власне відповідь."
+        system = SYSTEM_PROMPT + get_facts_for_prompt()
         if is_admin:
             system += (
                 "\n\nТИ ЗАРАЗ В РЕЖИМІ АДМІНА — спілкуєшся з Владиславом (власником InSilver).\n"
@@ -775,13 +764,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # обробка LEARN
-    monitor_reason = "AI"
     clean_reply = reply
-    if "REASON|||" in reply:
-        parts2 = reply.split("REASON|||", 1)
-        rest = parts2[1].split("\n", 1)
-        monitor_reason = "AI | " + rest[0].strip()
-        clean_reply = rest[1].strip() if len(rest) > 1 else ""
     if is_admin_chat and "LEARN|||" in reply:
         parts = reply.split("LEARN|||")
         clean_reply = parts[0].strip()
@@ -791,7 +774,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(clean_reply)
     log_conv(chat_id, "bot", "out", clean_reply)
-    await monitor_log(context, username, text, clean_reply, source=monitor_reason, is_admin=is_admin_chat)
 
 
 
