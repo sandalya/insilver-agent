@@ -14,7 +14,7 @@ def save_kb(items: list):
     with open(KB_FILE, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
 
-def add_entry(trigger: str, response_text: str, media: list = None):
+def add_entry(trigger: str, response_text: str, media: list = None, tags: list = None, source: str = "admin"):
     """Додає або оновлює запис в базі знань."""
     items = load_kb()
     # перевіряємо чи не дублюємо
