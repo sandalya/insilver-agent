@@ -36,31 +36,23 @@ def find_photo(query: str, chat_id: int = 0) -> str | None:
             if item["photo"] and os.path.exists(item["photo"]):
                 candidates.append(item["photo"])
 
-    # по ключових словах
-    if not candidates:
-        for item in PHOTO_INDEX:
-            keywords = [k.lower() for k in (item.get("keywords") or [])]
-            if any(k in q for k in keywords):
-                if item["photo"] and os.path.exists(item["photo"]):
-                    candidates.append(item["photo"])
+    # пошук по keywords вимкнено
 
-    # по original_text
-    if not candidates:
-        for item in PHOTO_INDEX:
-            text = (item.get("original_text") or "").lower()
-            if text and any(word in text for word in q.split() if len(word) > 2):
-                if item["photo"] and os.path.exists(item["photo"]):
-                    candidates.append(item["photo"])
+    # пошук по original_text вимкнено — дає помилкові збіги
 
-    # по типу виробу
+    # по типу виробу — тільки точний збіг типу
     if not candidates:
         for item_type, roots in TYPE_ROOTS.items():
             if any(r in q for r in roots):
                 matches = [i["photo"] for i in PHOTO_INDEX
                           if (i.get("type") or "").lower() == item_type
-                          and i["photo"] and os.path.exists(i["photo"])]
+                          and i["photo"] and os.path.exists(i["photo"])
+                          and i.get("type")]
                 candidates.extend(matches)
                 break
+    # якщо нічого не знайшли по типу — не повертаємо випадкове фото
+    if not candidates:
+        return None
 
     if not candidates:
         return None

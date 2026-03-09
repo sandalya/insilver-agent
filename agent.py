@@ -150,21 +150,20 @@ def ask_ai(chat_id, text, is_admin=False):
         if len(history) > 10:
             history = history[-10:]
         chat_histories[chat_id] = history
-        system = SYSTEM_PROMPT + get_facts_for_prompt() + "\n\nПеред кожною відповіддю додай рядок: REASON|||одне речення чому саме така відповідь (наприклад: клієнт питає про ціну, клієнт хоче замовити, клієнт питає про терміни). Після цього рядку — власне відповідь."
+        system = SYSTEM_PROMPT + get_facts_for_prompt() + ("\n\nФОРМАТ ВІДПОВІДІ (суворо):\n""Рядок 1: REASON|||причина\n""Рядок 2 (якщо треба): START_ORDER\n""Рядок 3 (якщо треба): PHOTO_REQUEST|||тип або all\n""Далі: текст відповіді клієнту (коротко, 1-3 речення)\n""Мітки клієнт не бачить.")
         if is_admin:
             system += (
-                "\n\nТИ ЗАРАЗ В РЕЖИМІ АДМІНА — спілкуєшся з Владиславом (власником InSilver).\n"
-                "1. Якщо Владислав пише факт про вироби, ціни, умови — перефразуй коротко і запитай 'Вірно зрозумів?'. Додай в кінці: LEARN|||перефразований факт одним реченням\n"
-                "2. Якщо питає як клієнт — відповідай нормально\n"
-                "3. НІКОЛИ не додавай CONFIRM самостійно — тільки LEARN\n"
-                "Завжди додавай в кінці відповіді рядок: [🔧 Режим адміна]"
+                "\n\nДОДАТКОВО для цього користувача (власник майстерні Владислав):\n"
+                "Якщо повідомлення містить новий факт про вироби, ціни або умови роботи — в кінці відповіді додай: LEARN|||факт одним реченням\n"
+                "В інших випадках — відповідай як звичайному користувачу, без змін тону.\n"
             )
         r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "system", "content": system}] + history,
-            max_tokens=500, temperature=0.5,
+            max_tokens=800, temperature=0.5,
         )
         reply = r.choices[0].message.content.strip()
+        logging.info("GPT RAW: " + repr(reply[:200]))
         history.append({"role": "assistant", "content": reply})
         chat_histories[chat_id] = history
         return reply
@@ -254,7 +253,6 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• /facts — збережені знання\n"
             f"• /delfact N — видалити факт\n\n"
             f"Збережено фактів: {len(facts)}\n"
-            f"/admin — вимкнути режим\n\n[🔧 Режим адміна]"
         )
     else:
         await update.message.reply_text("✅ Режим адміна вимкнено.")
@@ -647,6 +645,26 @@ async def save_admin_photo(photo_file, caption, chat_id, context):
 
 # ===== ТЕКСТ =====
 
+PHOTO_CAPTIONS = [
+    "Ось наша робота",
+    "Виготовлено в InSilver",
+    "Срібло 925, ручна робота",
+    "Майстерня InSilver",
+    "Наш виріб зі срібла 925",
+]
+
+def get_photo_caption(photo_path):
+    import random
+    if os.path.exists("photo_index.json"):
+        with open("photo_index.json", "r", encoding="utf-8") as f:
+            index = json.load(f)
+        for item in index:
+            if item.get("photo") == photo_path:
+                text = item.get("original_text", "").strip()
+                if text:
+                    return text
+    return random.choice(PHOTO_CAPTIONS)
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
@@ -735,6 +753,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_conv(chat_id, "bot", "out", f"[FAQ: {faq_match['topic']}]")
             return
 
+    # автозапуск анкети через GPT-класифікацію
+    if state["step"] is None:
+        import re as _re
+        order_patterns = [
+            r"хоч[уи]\s+(замовити|зробити|оформити)",
+            r"замов(ити|лення|ляю)",
+            r"(зроби|оформи)\s+замовлення",
+        ]
+        if any(_re.search(p, text.lower()) for p in order_patterns):
+            state["step"] = 0
+            state["data"] = {}
+            state["waiting_text"] = False
+            state["is_admin_order"] = False
+            await send_step(chat_id, context, STEPS_CLIENT, 0)
+            return
+
     # ескалація
     if needs_escalation(text) and not is_admin_chat:
         reply = "Передаю майстру Владиславу 🙏\nТел: 0936931493"
@@ -743,18 +777,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # фото
-    if wants_photo(text, chat_id):
-        photo_path = find_photo(text, chat_id)
-        logging.info(f"PHOTO SEARCH: '{text}' -> {photo_path}")
-        if photo_path and os.path.exists(photo_path):
-            await update.message.reply_photo(photo=open(photo_path, "rb"), caption="Ось приклад з нашої майстерні 🩶")
-            return
-        else:
-            await update.message.reply_text("Фото по цьому запиту не знайдено. Спробуйте інший опис 🩶")
-            return
-            log_conv(chat_id, "bot", "out", f"[фото: {photo_path}]")
-            if not is_admin_chat:
-                return
+    # if wants_photo(text, chat_id):
+    # photo_path = find_photo(text, chat_id)
+    # logging.info(f"PHOTO SEARCH: '{text}' -> {photo_path}")
+    # if photo_path and os.path.exists(photo_path):
+    # await update.message.reply_photo(photo=open(photo_path, "rb"), caption=get_photo_caption(photo_path))
+    # return
+    # else:
+    # await update.message.reply_text("Фото по цьому запиту не знайдено. Спробуйте інший опис 🩶")
+    # return
+    # log_conv(chat_id, "bot", "out", f"[фото: {photo_path}]")
+    # if not is_admin_chat:
+    # return
 
     # підтвердження факту від адміна
     confirm_words = ["так", "вірно", "правильно", "ок", "ok", "👍", "точно", "саме так"]
@@ -774,23 +808,59 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
 
-    # обробка LEARN
+
+    # парсимо мітки
     monitor_reason = "AI"
+    photo_request = None
+    start_order = False
     clean_reply = reply
-    if "REASON|||" in reply:
-        parts2 = reply.split("REASON|||", 1)
+    if "REASON|||" in clean_reply:
+        parts2 = clean_reply.split("REASON|||", 1)
         rest = parts2[1].split("\n", 1)
         monitor_reason = "AI | " + rest[0].strip()
         clean_reply = rest[1].strip() if len(rest) > 1 else ""
-    if is_admin_chat and "LEARN|||" in reply:
-        parts = reply.split("LEARN|||")
+    if is_admin_chat and "LEARN|||" in clean_reply:
+        parts = clean_reply.split("LEARN|||")
         clean_reply = parts[0].strip()
-        pending_fact = parts[1].split("\n")[0].strip()
-        state["pending_fact"] = pending_fact
+        state["pending_fact"] = parts[1].split("\n")[0].strip()
         state["pending_original"] = text
-
-    await update.message.reply_text(clean_reply)
+        if not clean_reply:
+            clean_reply = "Зрозумів, запам'ятав!"
+    clean_lines = []
+    for line in clean_reply.split("\n"):
+        s = line.strip()
+        if s == "START_ORDER":
+            start_order = True
+        elif s.startswith("PHOTO_REQUEST|||"):
+            photo_request = s.split("|||", 1)[1].strip()
+        else:
+            clean_lines.append(line)
+    clean_reply = "\n".join(clean_lines).strip()
+    if not start_order and clean_reply:
+        await update.message.reply_text(clean_reply)
     log_conv(chat_id, "bot", "out", clean_reply)
+    if start_order and not is_admin_chat:
+        state["step"] = 0
+        state["data"] = {}
+        state["waiting_text"] = False
+        state["is_admin_order"] = False
+        await send_step(chat_id, context, STEPS_CLIENT, 0)
+    if photo_request:
+        if photo_request == "all":
+            sent = 0
+            for ptype in ["браслет", "ланцюжок", "кулон", "хрестик", "печатка"]:
+                photo_path = find_photo(ptype, chat_id)
+                if photo_path and os.path.exists(photo_path):
+                    await context.bot.send_photo(chat_id=chat_id, photo=open(photo_path, "rb"), caption=ptype.capitalize())
+                    sent += 1
+            if not sent:
+                await context.bot.send_message(chat_id=chat_id, text="Фото поки що немає. Скоро додамо!")
+        else:
+            photo_path = find_photo(photo_request, chat_id)
+            if photo_path and os.path.exists(photo_path):
+                await context.bot.send_photo(chat_id=chat_id, photo=open(photo_path, "rb"))
+            else:
+                await context.bot.send_message(chat_id=chat_id, text="Фото " + photo_request + " поки що немає.")
     await monitor_log(context, username, text, clean_reply, source=monitor_reason, is_admin=is_admin_chat)
 
 
@@ -809,7 +879,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not caption:
         await update.message.reply_text(
             "Додайте підпис до фото з описом виробу\n"
-            "Наприклад: браслет Бісмарк чорніння 25г\n\n[🔧 Режим адміна]"
         )
         return
 
@@ -818,7 +887,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Фото збережено!\n"
         f"Опис: {caption}\n"
         f"Файл: {filename}\n\n"
-        f"Клієнти знайдуть його по запиту 🩶\n\n[🔧 Режим адміна]"
     )
 
 
@@ -858,7 +926,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_faq(topic=topic, photo_path=faq_filename, caption=client_caption)
         faq_items = load_faq()
         await update.message.reply_text(
-            f"✅ FAQ збережено #{len(faq_items)}\nТема: {topic[:50]}\n\n[🔧 Режим адміна]"
         )
         return
 
@@ -907,7 +974,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         json.dump(index, f, ensure_ascii=False, indent=2)
 
     await update.message.reply_text(
-        "Фото збережено! Опис: " + caption + " [R] Режим адміна]"
     )
 
 
