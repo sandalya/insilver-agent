@@ -1,20 +1,22 @@
-# секрети
+# Environment variables
 .env
+.env.local
 
-# сесія Telegram
-*.session
-*.session-journal
-
-# дані які генеруються автоматично
-orders.json
-learned_facts.json
-logs/
-channel_photos/
-channel_data.json
-photo_index.json
+# Logs
+*.log
+dev_agent.log
 
 # Python
-venv/
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
