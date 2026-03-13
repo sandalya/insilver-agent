@@ -1,0 +1,20 @@
+# секрети
+.env
+
+# сесія Telegram
+*.session
+*.session-journal
+
+# дані які генеруються автоматично
+orders.json
+learned_facts.json
+logs/
+channel_photos/
+channel_data.json
+photo_index.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo

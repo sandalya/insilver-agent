@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>InSilver Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; }
+header { background: #1a1a1a; border-bottom: 1px solid #333; padding: 16px 24px; display: flex; align-items: center; gap: 12px; }
+header h1 { font-size: 20px; font-weight: 600; color: #c0a060; }
+header span { font-size: 13px; color: #666; }
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 20px; }
+.card .label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.card .value { font-size: 28px; font-weight: 700; color: #c0a060; }
+.card .sub { font-size: 13px; color: #555; margin-top: 4px; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+.chart-box { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 20px; }
+.chart-box h3 { font-size: 14px; color: #888; margin-bottom: 16px; }
+.orders-section { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 20px; }
+.orders-section h3 { font-size: 14px; color: #888; margin-bottom: 16px; }
+.filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-btn { padding: 6px 14px; border-radius: 20px; border: 1px solid #333; background: transparent; color: #888; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+.filter-btn.active { background: #c0a060; border-color: #c0a060; color: #000; font-weight: 600; }
+.order-card { border: 1px solid #2a2a2a; border-radius: 8px; padding: 14px; margin-bottom: 10px; }
+.order-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.order-id { font-weight: 700; color: #c0a060; font-size: 14px; }
+.status-badge { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+.status-new { background: #1a3a5c; color: #5ab4ff; }
+.status-in_progress { background: #3a2a0a; color: #ffaa30; }
+.status-ready { background: #0a3a1a; color: #40cc70; }
+.status-sent { background: #1a1a3a; color: #8080ff; }
+.status-paused { background: #2a2a2a; color: #888; }
+.order-details { font-size: 13px; color: #666; line-height: 1.6; }
+.order-details span { color: #aaa; }
+@media (max-width: 768px) { .charts { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🩶 InSilver</h1>
+    <span>Панель управління</span>
+  </div>
+</header>
+<div class="container">
+  <div class="cards">
+    <div class="card"><div class="label">Виручка за місяць</div><div class="value" id="revenue">—</div><div class="sub">грн</div></div>
+    <div class="card"><div class="label">Вага за місяць</div><div class="value" id="weight">—</div><div class="sub">грам срібла</div></div>
+    <div class="card"><div class="label">Замовлень за тиждень</div><div class="value" id="week">—</div></div>
+    <div class="card"><div class="label">Замовлень за місяць</div><div class="value" id="month">—</div></div>
+  </div>
+  <div class="charts">
+    <div class="chart-box"><h3>Замовлення по днях</h3><canvas id="daysChart"></canvas></div>
+    <div class="chart-box"><h3>Розподіл статусів</h3><canvas id="statusChart"></canvas></div>
+    <div class="chart-box"><h3>Звідки клієнти</h3><canvas id="sourcesChart"></canvas></div>
+    <div class="chart-box"><h3>Топ плетінь</h3><canvas id="stylesChart"></canvas></div>
+  </div>
+  <div class="orders-section">
+    <h3>Замовлення</h3>
+    <div class="filters">
+      <button class="filter-btn active" onclick="loadOrders('all')">📋 Всі</button>
+      <button class="filter-btn" onclick="loadOrders('new')">🆕 Нові</button>
+      <button class="filter-btn" onclick="loadOrders('in_progress')">⚙️ В роботі</button>
+      <button class="filter-btn" onclick="loadOrders('ready')">✅ Готові</button>
+      <button class="filter-btn" onclick="loadOrders('sent')">📦 Відправлені</button>
+      <button class="filter-btn" onclick="loadOrders('paused')">⏸ Призупинені</button>
+      <button class="filter-btn" onclick="loadOrders('archived')">🗃 Архів</button>
+    </div>
+    <div id="orders-list"></div>
+  </div>
+</div>
+<script>
+const TOKEN = "{{TOKEN}}";
+const STATUS_NAMES = {new:"Нове",in_progress:"В роботі",ready:"Готово",sent:"Відправлено",paused:"Призупинено",archived:"Архів"};
+
+async function loadStats() {
+  const r = await fetch(`/api/stats?token=${TOKEN}`);
+  const d = await r.json();
+  document.getElementById("revenue").textContent = d.month_revenue.toLocaleString();
+  document.getElementById("weight").textContent = d.month_weight;
+  document.getElementById("week").textContent = d.week_count;
+  document.getElementById("month").textContent = d.month_count;
+
+  const gold = "#c0a060";
+  const chartDefaults = { color: "#666", borderColor: "#333" };
+
+  new Chart(document.getElementById("daysChart"), {
+    type: "bar",
+    data: {
+      labels: Object.keys(d.days_chart),
+      datasets: [{ data: Object.values(d.days_chart), backgroundColor: gold + "99", borderColor: gold, borderWidth: 1 }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#222" } }, y: { ticks: { color: "#555" }, grid: { color: "#222" } } } }
+  });
+
+  new Chart(document.getElementById("statusChart"), {
+    type: "doughnut",
+    data: {
+      labels: Object.keys(d.status_counts).map(k => STATUS_NAMES[k] || k),
+      datasets: [{ data: Object.values(d.status_counts), backgroundColor: ["#5ab4ff","#ffaa30","#40cc70","#8080ff","#888"] }]
+    },
+    options: { plugins: { legend: { labels: { color: "#666" } } } }
+  });
+
+  new Chart(document.getElementById("sourcesChart"), {
+    type: "pie",
+    data: {
+      labels: Object.keys(d.sources),
+      datasets: [{ data: Object.values(d.sources), backgroundColor: ["#c0a060","#a08040","#806020","#604000","#402000"] }]
+    },
+    options: { plugins: { legend: { labels: { color: "#666" } } } }
+  });
+
+  new Chart(document.getElementById("stylesChart"), {
+    type: "bar",
+    data: {
+      labels: d.top_styles.map(s => s[0]),
+      datasets: [{ data: d.top_styles.map(s => s[1]), backgroundColor: gold + "99", borderColor: gold, borderWidth: 1 }]
+    },
+    options: { indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#222" } }, y: { ticks: { color: "#555" }, grid: { color: "#222" } } } }
+  });
+}
+
+async function loadOrders(status) {
+  document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+  event.target.classList.add("active");
+  const r = await fetch(`/api/orders?token=${TOKEN}&status=${status}`);
+  const orders = await r.json();
+  const list = document.getElementById("orders-list");
+  if (!orders.length) { list.innerHTML = '<div style="color:#555;padding:20px;text-align:center">Замовлень немає</div>'; return; }
+  list.innerHTML = orders.map(o => `
+    <div class="order-card">
+      <div class="order-header">
+        <span class="order-id">${o.id}</span>
+        <span class="status-badge status-${o.status || 'new'}">${STATUS_NAMES[o.status] || o.status}</span>
+      </div>
+      <div class="order-details">
+        <span>Тип:</span> ${o.type || '—'} ${o.style || ''}<br>
+        <span>Клієнт:</span> ${o.contact || '—'}<br>
+        <span>Розмір:</span> ${o.size || '—'} | <span>Маса:</span> ${o.weight_actual ? o.weight_actual + 'г' : o.weight || '—'}
+        ${o.total_price ? ` | <span>Сума:</span> ${o.total_price} грн` : ''}<br>
+        <span>Покриття:</span> ${o.coating || '—'} | <span>Застібка:</span> ${o.clasp || '—'}<br>
+        ${o.note ? `<span>Додатково:</span> ${o.note}<br>` : ''}
+        <span>Створено:</span> ${o.created || '—'}
+        ${o.source ? ` | <span>Звідки:</span> ${o.source}` : ''}
+      </div>
+    </div>
+  `).join("");
+}
+
+loadStats();
+loadOrders("all");
+</script>
+</body>
+</html>
